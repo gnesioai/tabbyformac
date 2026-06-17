@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>Tabby</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.tabby.switcher</string>
+    <key>CFBundleName</key>
+    <string>Tabby</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Tabby requires automation permissions to switch and manage tabs in your web browsers (Chrome, Safari, etc.).</string>
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Tabby uses Accessibility access to list and switch between open windows and intercept keyboard shortcuts.</string>
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Tabby uses screen recording to show live window previews in the switcher.</string>
+</dict>
+</plist>

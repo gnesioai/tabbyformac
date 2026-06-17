@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Swift Package Manager
+/.build
+/Packages
+.swiftpm/configuration/registries.json
+.swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
+.netrc
+
+# Xcode
+xcuserdata/
+DerivedData/
+
+# Build output / distributables
+/build
+*.dmg
+
+# Logs
+*.log
+
+# Dev scratch
+test_url.swift
+toggle.swift
+
+# Internal planning docs
+docs/superpowers/
