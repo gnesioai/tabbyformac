@@ -93,7 +93,14 @@ struct PreferencesView: View {
                 Text("Switch apps fast, pick windows precisely.")
                     .font(.system(size: 10))
                     .foregroundColor(.secondary.opacity(0.8))
-                
+
+                Button("Check for Updates…") {
+                    (NSApp.delegate as? AppDelegate)?.menuCheckForUpdates()
+                }
+                .buttonStyle(.link)
+                .font(.system(size: 11))
+                .padding(.top, 2)
+
                 Button(action: {
                     if let url = URL(string: "https://paypal.me/tabbyformac") {
                         NSWorkspace.shared.open(url)
