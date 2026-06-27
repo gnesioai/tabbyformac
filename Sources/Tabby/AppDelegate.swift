@@ -2,12 +2,15 @@ import Foundation
 import AppKit
 import SwiftUI
 import Carbon
+import Sparkle
 
 class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var statusItem: NSStatusItem?
     var switcherWindow: SwitcherWindow?
     var preferencesWindow: NSWindow?
     let state = SwitcherState()
+    // Sparkle auto-updater. Starts checking on launch per Info.plist (SUEnableAutomaticChecks).
+    let updaterController = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // 1. Initialize the overlay window
@@ -150,10 +153,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     /// Create the menu bar item
     private func createStatusItem() {
-        if statusItem != nil {
-            statusItem = nil
-        }
-        
+        // ponytail: never recreate — destroying and rebuilding the NSStatusItem on
+        // dock-state changes is what drops the icon. Keep the one we have.
+        guard statusItem == nil else { return }
+
         // Force the status item to have a strict square length so it cannot be collapsed to 0 width
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         statusItem?.isVisible = true
@@ -181,9 +184,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         menu.addItem(NSMenuItem.separator())
         
         menu.addItem(withTitle: "Preferences...", action: #selector(menuShowPreferences), keyEquivalent: ",")
-        
+
+        menu.addItem(withTitle: "Check for Updates…", action: #selector(menuCheckForUpdates), keyEquivalent: "")
+
         menu.addItem(NSMenuItem.separator())
-        
+
         menu.addItem(withTitle: "Quit Tabby", action: #selector(menuQuit), keyEquivalent: "q")
         
         statusItem?.menu = menu
@@ -199,6 +204,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         showPreferencesWindow()
     }
     
+    @objc func menuCheckForUpdates() {
+        updaterController.checkForUpdates(nil)
+    }
+
     @objc func menuQuit() {
         NSApp.terminate(nil)
     }

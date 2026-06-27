@@ -4,7 +4,17 @@ import SwiftUI
 
 class SwitcherWindow: NSPanel {
     let state: SwitcherState
-    
+    private var hostingView: NSHostingView<SwitcherView>?
+
+    /// Switcher size scaled to the screen: ~42% width / ~62% height, clamped so it stays usable
+    /// on small displays and doesn't sprawl on large ones.
+    private static func preferredSize(for screen: NSScreen) -> NSSize {
+        let vf = screen.visibleFrame
+        let w = min(max((vf.width * 0.42).rounded(), 800), 1400)
+        let h = min(max((vf.height * 0.62).rounded(), 480), 900)
+        return NSSize(width: w, height: h)
+    }
+
     init(state: SwitcherState) {
         self.state = state
         
@@ -27,9 +37,10 @@ class SwitcherWindow: NSPanel {
         self.isMovable = false
         self.hasShadow = true
         
-        // Wrap SwiftUI view
+        // Wrap SwiftUI view (size set per-screen in centerOnActiveScreen)
         let hostingView = NSHostingView(rootView: SwitcherView(state: state))
         hostingView.frame = NSRect(x: 0, y: 0, width: 800, height: 480)
+        self.hostingView = hostingView
         self.contentView = hostingView
         
         // Listen for resign key to close window automatically
@@ -62,13 +73,17 @@ class SwitcherWindow: NSPanel {
         }
         
         let screenFrame = screen.visibleFrame
-        let wWidth: CGFloat = 800
-        let wHeight: CGFloat = self.frame.height
-        
+        let size = SwitcherWindow.preferredSize(for: screen)
+        let wWidth = size.width
+        let wHeight = size.height
+
+        // Resize the SwiftUI content to match this screen.
+        hostingView?.rootView = SwitcherView(state: state, width: wWidth, height: wHeight)
+        hostingView?.frame = NSRect(x: 0, y: 0, width: wWidth, height: wHeight)
+
         let x = screenFrame.origin.x + (screenFrame.width - wWidth) / 2
         let y = screenFrame.origin.y + (screenFrame.height - wHeight) / 2 + 80
-        
-        print("Tabby: Centering switcher window on screen: \(screen.frame), visibleFrame: \(screenFrame). Calculated window frame: \((x, y, wWidth, wHeight))")
+
         self.setFrame(NSRect(x: x, y: y, width: wWidth, height: wHeight), display: true)
     }
     
@@ -128,6 +143,13 @@ class SwitcherWindow: NSPanel {
         teardownFlagsMonitors()
         super.orderOut(sender)
     }
+
+    /// Stops hold-to-focus so the switcher stays open after the modifier is released.
+    /// Used when the user starts typing a search query while still holding the hotkey.
+    private func disarmModifierTracking() {
+        isTrackingModifiers = false
+        teardownFlagsMonitors()
+    }
     
     override func sendEvent(_ event: NSEvent) {
         if event.type == .keyDown {
@@ -166,9 +188,31 @@ class SwitcherWindow: NSPanel {
                 return
             }
             
-            // Always intercept Cmd+W
-            if keyCode == 13 && event.modifierFlags.contains(.command) {
+            // Intercept <modifier>+W to close — Command, or the chosen trigger modifier
+            // (Option/Control) which is what's actually held in hold-to-switch mode.
+            if keyCode == 13 && (event.modifierFlags.contains(.command) || AppPreferences.shared.shortcutPreset.isModifierPressed(event.modifierFlags)) {
                 self.keyDown(with: event)
+                return
+            }
+
+            // Cmd+, opens Preferences — escape hatch when the menu bar icon is missing
+            if keyCode == 43 && event.modifierFlags.contains(.command) {
+                self.keyDown(with: event)
+                return
+            }
+
+            // Type-to-search: if a printable character is pressed while the hotkey modifier is
+            // still held (quick-switch / hold mode), disarm hold-to-focus so the switcher stays
+            // open, and feed the BASE character into the search field (charactersIgnoringModifiers
+            // gives "s" even for ⌥-s / ⌘-s). Once the modifier is released, normal TextField
+            // typing takes over.
+            let preset = AppPreferences.shared.shortcutPreset
+            if preset.isModifierPressed(event.modifierFlags),
+               let chars = event.charactersIgnoringModifiers, chars.count == 1,
+               let scalar = chars.unicodeScalars.first,
+               CharacterSet.alphanumerics.union(.whitespaces).contains(scalar) {
+                disarmModifierTracking()
+                state.updateQuery(state.searchQuery + chars)
                 return
             }
         }
@@ -233,8 +277,16 @@ class SwitcherWindow: NSPanel {
             }
             
         case 13: // W
-            if event.modifierFlags.contains(.command) {
+            if event.modifierFlags.contains(.command) || AppPreferences.shared.shortcutPreset.isModifierPressed(event.modifierFlags) {
                 state.closeSelectedWindow()
+            } else {
+                super.keyDown(with: event)
+            }
+
+        case 43: // Comma — Cmd+, opens Preferences
+            if event.modifierFlags.contains(.command) {
+                self.orderOut(nil)
+                (NSApp.delegate as? AppDelegate)?.showPreferencesWindow()
             } else {
                 super.keyDown(with: event)
             }

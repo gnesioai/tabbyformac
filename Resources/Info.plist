@@ -28,5 +28,13 @@
     <string>Tabby uses Accessibility access to list and switch between open windows and intercept keyboard shortcuts.</string>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Tabby uses screen recording to show live window previews in the switcher.</string>
+    <key>SUFeedURL</key>
+    <string>https://raw.githubusercontent.com/gnesioai/tabbyformac/main/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>52vTUcMwXKtLlfKr+NIVUvU2mqd2qk/K5Mxi+HRIRso=</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
 </dict>
 </plist>

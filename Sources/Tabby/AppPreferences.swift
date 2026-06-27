@@ -7,20 +7,18 @@ enum ShortcutPreset: String, CaseIterable, Identifiable {
     case optionTab = "Option + Tab"
     case controlTab = "Control + Tab"
     case cmdTab = "Command + Tab"
-    case cmdOptionTab = "Command + Option + Tab"
-    
+
     var id: String { self.rawValue }
-    
+
     var keyCode: UInt32 {
         return 48 // Always Tab!
     }
-    
+
     var modifiers: UInt32 {
         switch self {
         case .optionTab: return UInt32(optionKey)
         case .controlTab: return UInt32(controlKey)
         case .cmdTab: return UInt32(cmdKey)
-        case .cmdOptionTab: return UInt32(cmdKey | optionKey)
         }
     }
 
@@ -30,7 +28,6 @@ enum ShortcutPreset: String, CaseIterable, Identifiable {
         case .optionTab:    return flags.contains(.option)
         case .controlTab:   return flags.contains(.control)
         case .cmdTab:       return flags.contains(.command)
-        case .cmdOptionTab: return flags.contains(.command) && flags.contains(.option)
         }
     }
 
@@ -75,6 +72,10 @@ class AppPreferences: ObservableObject {
         
         self.showInDock = UserDefaults.standard.object(forKey: showInDockKey) as? Bool ?? false
         self.launchAtLogin = UserDefaults.standard.object(forKey: launchAtLoginKey) as? Bool ?? false
+
+        // didSet doesn't fire during init, and a reinstall can drop the SMAppService
+        // registration while the saved preference still says "on" — reconcile them at launch.
+        updateLaunchAtLoginState()
     }
     
     /// Updates Dock visibility policy based on preferences

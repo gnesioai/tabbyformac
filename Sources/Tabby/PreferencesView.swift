@@ -29,6 +29,7 @@ struct PreferencesView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             
             Divider()
@@ -49,6 +50,7 @@ struct PreferencesView: View {
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .lineSpacing(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             
             Divider()
@@ -93,24 +95,51 @@ struct PreferencesView: View {
                     .foregroundColor(.secondary.opacity(0.8))
                 
                 Button(action: {
-                    if let url = URL(string: "https://paypal.me/") {
+                    if let url = URL(string: "https://paypal.me/tabbyformac") {
                         NSWorkspace.shared.open(url)
                     }
                 }) {
                     HStack(spacing: 4) {
-                        Image(systemName: "dollarsign.circle.fill")
-                        Text("Donate via PayPal")
+                        Text("🍕")
+                        Text("Buy me a pizza")
                     }
                     .font(.system(size: 11))
                 }
                 .buttonStyle(.link)
                 .padding(.top, 4)
+
+                // Legal — deep-links to the source documents on GitHub.
+                HStack(spacing: 10) {
+                    LegalLink(title: "EULA", file: "EULA.md")
+                    Text("·").foregroundColor(.secondary.opacity(0.5))
+                    LegalLink(title: "License", file: "LICENSE.md")
+                    Text("·").foregroundColor(.secondary.opacity(0.5))
+                    LegalLink(title: "Privacy", file: "PRIVACY.md")
+                }
+                .font(.system(size: 10))
+                .padding(.top, 2)
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.top, 4)
         }
         .padding(20)
         .frame(width: 440)
+    }
+}
+
+/// Opens a repo legal document on GitHub.
+private struct LegalLink: View {
+    let title: String
+    let file: String
+    private static let repo = "https://github.com/gnesioai/tabbyformac/blob/main"
+
+    var body: some View {
+        Button(title) {
+            if let url = URL(string: "\(Self.repo)/\(file)") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        .buttonStyle(.link)
     }
 }
 

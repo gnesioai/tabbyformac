@@ -216,6 +216,20 @@ class SwitcherState: ObservableObject {
         
         NSLog("%@", "Tabby Diagnostics: refreshWindows() captured - previousGroupId: \(String(describing: previousGroupId)), previousWindowId: \(String(describing: previousWindowId)), previousWindowIndex: \(String(describing: previousWindowIndex))")
         
+        // Extract existing thumbnails to preserve them
+        var oldThumbnailsById: [String: NSImage] = [:]
+        var oldThumbnailsByUrl: [String: NSImage] = [:]
+        for group in self.groups {
+            for win in group.windows {
+                if let thumb = win.thumbnail {
+                    oldThumbnailsById[win.id] = thumb
+                    if win.isTab, let url = win.tabUrl, !url.isEmpty {
+                        oldThumbnailsByUrl[url] = thumb
+                    }
+                }
+            }
+        }
+
         thumbnailLoadToken += 1
         let myToken = thumbnailLoadToken
         let historyCopy = focusHistory
@@ -228,13 +242,18 @@ class SwitcherState: ObservableObject {
             
             var collected = WindowManager.shared.collectWindowGroups(expandedGroupIds: expandedGroupIdsCopy)
             
-            // Apply focus history to window items
+            // Apply focus history and preserve thumbnails
             for i in 0..<collected.count {
                 var group = collected[i]
                 for j in 0..<group.windows.count {
-                    let winId = group.windows[j].id
-                    if let date = historyCopy[winId] {
+                    let win = group.windows[j]
+                    if let date = historyCopy[win.id] {
                         group.windows[j].lastFocusedAt = date
+                    }
+                    if let oldThumb = oldThumbnailsById[win.id] {
+                        group.windows[j].thumbnail = oldThumb
+                    } else if win.isTab, let url = win.tabUrl, !url.isEmpty, let oldThumb = oldThumbnailsByUrl[url] {
+                        group.windows[j].thumbnail = oldThumb
                     }
                 }
                 
@@ -258,8 +277,12 @@ class SwitcherState: ObservableObject {
             // mirroring macOS Cmd+Tab. Apps Tabby has seen activated rank by recency; apps not
             // yet seen fall back to current-frontmost-first, then alphabetical.
             collected.sort { (g1, g2) -> Bool in
-                let t1 = activationCopy[g1.id]
-                let t2 = activationCopy[g2.id]
+                // Activation history is keyed by bundleId (same for all windows of a browser),
+                // not group id (which is unique per profile window).
+                let ak1 = g1.appBundleId ?? g1.appName
+                let ak2 = g2.appBundleId ?? g2.appName
+                let t1 = activationCopy[ak1]
+                let t2 = activationCopy[ak2]
 
                 if let d1 = t1, let d2 = t2 {
                     return d1 > d2
@@ -305,32 +328,52 @@ class SwitcherState: ObservableObject {
     /// Top `priorityCount` windows are fetched first (priority pass), then the rest.
     private func lazyLoadThumbnails(for initialGroups: [WindowGroup], priorityCount: Int = 5) {
         DispatchQueue.main.async { [weak self] in self?.thumbnailsLoading = true }
-        // Increment token to cancel any previous in-flight job
         thumbnailLoadToken += 1
         let myToken = thumbnailLoadToken
-        
-        // Build a flat ordered list of (groupIndex, windowIndex, windowId) to capture
+
+        // Browser tab previews go first (priority), regular windows fill remaining slots then deferred.
+        // One capture per CGWindowID — all tabs sharing that window get the thumbnail via propagation.
         var priorityWork: [(itemId: String, windowId: CGWindowID)] = []
         var deferredWork: [(itemId: String, windowId: CGWindowID)] = []
+        var capturedWindowIds = Set<Int>()
 
-        var seen = 0
-        for (_, group) in initialGroups.enumerated() {
-            for (_, win) in group.windows.enumerated() {
-                guard let wId = win.windowId, !win.isMinimized else { continue }
+        // Pass 1: one representative tab per browser window (prefer active, but any will do)
+        for group in initialGroups {
+            for win in group.windows where win.isTab {
+                guard let wId = win.windowId, !win.isMinimized,
+                      !capturedWindowIds.contains(wId) else { continue }
+                // Skip inactive tabs only when there IS an active one for this window
+                if !win.isActiveTab {
+                    let hasActive = group.windows.contains(where: { $0.windowId == wId && $0.isActiveTab })
+                    if hasActive { continue }
+                }
+                capturedWindowIds.insert(wId)
+                priorityWork.append((itemId: win.id, windowId: CGWindowID(wId)))
+            }
+        }
+
+        // Pass 2: regular (non-tab) windows
+        var regularSeen = 0
+        let remainingPriority = max(0, priorityCount - priorityWork.count)
+        for group in initialGroups {
+            for win in group.windows where !win.isTab {
+                guard let wId = win.windowId, !win.isMinimized,
+                      !capturedWindowIds.contains(wId) else { continue }
+                capturedWindowIds.insert(wId)
                 let entry = (itemId: win.id, windowId: CGWindowID(wId))
-                if seen < priorityCount {
+                if regularSeen < remainingPriority {
                     priorityWork.append(entry)
                 } else {
                     deferredWork.append(entry)
                 }
-                seen += 1
+                regularSeen += 1
             }
         }
-        
+
         thumbnailQueue.async { [weak self] in
             guard let self = self else { return }
-            
-            // --- Priority pass: top N windows ---
+
+            // Priority pass — flush to UI as a batch
             var priorityUpdates: [(itemId: String, thumb: NSImage)] = []
             for entry in priorityWork {
                 guard self.thumbnailLoadToken == myToken else { return }
@@ -338,8 +381,6 @@ class SwitcherState: ObservableObject {
                     priorityUpdates.append((itemId: entry.itemId, thumb: thumb))
                 }
             }
-
-            // Flush priority thumbnails to the UI immediately
             if !priorityUpdates.isEmpty {
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self, self.thumbnailLoadToken == myToken else { return }
@@ -348,8 +389,8 @@ class SwitcherState: ObservableObject {
                     }
                 }
             }
-            
-            // --- Deferred pass: remaining windows one-by-one ---
+
+            // Deferred pass — one at a time
             for entry in deferredWork {
                 guard self.thumbnailLoadToken == myToken else { return }
                 guard let thumb = WindowManager.shared.captureWindowThumbnail(windowId: entry.windowId) else { continue }
@@ -366,9 +407,13 @@ class SwitcherState: ObservableObject {
             }
         }
     }
-    
-    /// Applies a thumbnail image to the WindowItem matching the given ID. Must be called on main thread.
+
+    /// Sets the captured screenshot on the matched item only. We do NOT propagate to sibling tabs:
+    /// a browser window only renders its frontmost tab, so the screenshot is that tab's content.
+    /// Inactive tabs share the same OS window and have no capturable pixels — they render a
+    /// title/site placeholder in PreviewPane instead. Must be called on main thread.
     private func applyThumbnail(_ image: NSImage, toItemWithId itemId: String) {
+        objectWillChange.send()
         for gIdx in 0..<groups.count {
             for wIdx in 0..<groups[gIdx].windows.count {
                 if groups[gIdx].windows[wIdx].id == itemId {
@@ -490,8 +535,6 @@ class SwitcherState: ObservableObject {
         selectedWindowIndex = nil
     }
     
-    // MARK: - Selected Item Helper
-    
     /// Returns the exact WindowItem selected, or nil if a group header (with multiple windows) is selected
     func getSelectedWindowItem() -> WindowItem? {
         if !searchQuery.isEmpty {
@@ -508,10 +551,9 @@ class SwitcherState: ObservableObject {
         if let wIndex = selectedWindowIndex {
             guard wIndex < group.windows.count else { return nil }
             return group.windows[wIndex]
-        } else if group.windows.count == 1 {
-            return group.windows[0]
         }
-        return nil
+
+        return group.windows.first
     }
     
     // MARK: - Keyboard Controls
@@ -651,9 +693,9 @@ class SwitcherState: ObservableObject {
         guard group.windows.count > 1 else { return }
         expandedGroupIds.insert(group.id)
         selectedWindowIndex = 0
-        if isBrowser {
-            refreshWindows()
-        }
+        // Tabs are already fetched for browsers with Automation permission (checkAutomationPermission
+        // causes collectWindowGroups to fetch regardless of expandedGroupIds). Calling refreshWindows
+        // here would cancel in-flight thumbnails and cause a visible "No Preview" flash.
     }
     
     func collapseGroup() {
@@ -734,8 +776,37 @@ class SwitcherState: ObservableObject {
         return WindowManager.shared.focus(windowItem: window)
     }
     
+    /// Closes every window in the currently selected group, regardless of expanded state.
+    func closeSelectedGroup() {
+        guard searchQuery.isEmpty, selectedGroupIndex < groups.count else { return }
+        let group = groups[selectedGroupIndex]
+
+        var closedAny = false
+        for window in group.windows {
+            if WindowManager.shared.close(windowItem: window) { closedAny = true }
+        }
+        guard closedAny else { return }
+
+        expandedGroupIds.remove(group.id)
+        groups.remove(at: selectedGroupIndex)
+        if selectedGroupIndex >= groups.count {
+            selectedGroupIndex = max(0, groups.count - 1)
+        }
+        selectedWindowIndex = nil
+    }
+
     /// Closes the currently selected window and updates the UI state
     func closeSelectedWindow() {
+        // If a multi-window group header is selected (collapsed or on the header row),
+        // close the whole group rather than a single window.
+        if searchQuery.isEmpty,
+           selectedWindowIndex == nil,
+           selectedGroupIndex < groups.count,
+           groups[selectedGroupIndex].windows.count > 1 {
+            closeSelectedGroup()
+            return
+        }
+
         guard let windowToClose = getSelectedWindowItem() else { return }
 
         let success = WindowManager.shared.close(windowItem: windowToClose)

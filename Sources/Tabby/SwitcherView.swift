@@ -22,7 +22,14 @@ struct VisualEffectView: NSViewRepresentable {
 struct SwitcherView: View {
     @ObservedObject var state: SwitcherState
     @FocusState private var isSearchFocused: Bool
-    
+
+    // Overall switcher size, scaled to the active screen by SwitcherWindow.
+    var width: CGFloat = 800
+    var height: CGFloat = 480
+    // Preview pane gets the larger share so window screenshots read clearly.
+    private var listWidth: CGFloat { (width * 0.42).rounded() }
+    private var previewWidth: CGFloat { width - listWidth }
+
     var body: some View {
         HStack(spacing: 0) {
             // Left Pane (Search and List)
@@ -88,18 +95,19 @@ struct SwitcherView: View {
                     }
                 }
             }
-            .frame(width: 420)
-            
+            .frame(width: listWidth)
+
             // Right Pane (Preview)
             Divider()
                 .background(Color(NSColor.separatorColor))
-            
+
             PreviewPane(state: state)
-                .frame(width: 380)
+                .id(state.getSelectedWindowItem()?.id ?? "none")
+                .frame(width: previewWidth)
                 .frame(maxHeight: .infinity)
                 .background(Color(NSColor.windowBackgroundColor).opacity(0.3))
         }
-        .frame(height: 480)
+        .frame(width: width, height: height)
         .background(VisualEffectView(material: .hudWindow, blendingMode: .behindWindow))
         .cornerRadius(12)
         .overlay(
@@ -137,13 +145,10 @@ struct SwitcherView: View {
 struct PreviewPane: View {
     @ObservedObject var state: SwitcherState
     
+    // Show a preview whenever there's a window to preview — including a group header,
+    // which defaults to the group's most recent window.
     var isExactWindowSelected: Bool {
-        if !state.searchQuery.isEmpty { return true }
-        if state.selectedWindowIndex != nil { return true }
-        if state.selectedGroupIndex < state.groups.count {
-            return state.groups[state.selectedGroupIndex].windows.count == 1
-        }
-        return false
+        return state.getSelectedWindowItem() != nil
     }
     
     var body: some View {
@@ -162,6 +167,7 @@ struct PreviewPane: View {
                                 )
                                 .shadow(color: Color.black.opacity(0.3), radius: 8, x: 0, y: 4)
                                 .padding(.horizontal, 20)
+                                .id(window.id)
                         } else if state.thumbnailsLoading {
                             VStack(spacing: 8) {
                                 ProgressView()
@@ -169,6 +175,24 @@ struct PreviewPane: View {
                                 Text("Loading Preview…")
                                     .font(.caption)
                                     .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        } else if window.isTab {
+                            // Background tabs share one OS window with the visible tab and have no
+                            // capturable pixels. Show the tab's site instead of a fake screenshot.
+                            VStack(spacing: 10) {
+                                Image(systemName: "globe")
+                                    .font(.system(size: 36))
+                                    .foregroundColor(.secondary.opacity(0.6))
+                                if let host = window.tabUrl.flatMap({ URL(string: $0)?.host }) {
+                                    Text(host)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Text("Background tab")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary.opacity(0.7))
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         } else {
@@ -236,7 +260,7 @@ struct PreviewPane: View {
                 HStack(spacing: 10) {
                     ShortcutHint(keys: ["→", "/", "~"], action: "Expand")
                     ShortcutHint(keys: ["return"], action: "Focus")
-                    ShortcutHint(keys: ["⌘", "W"], action: "Close")
+                    ShortcutHint(keys: ["W"], action: "Close")
                     ShortcutHint(keys: ["esc"], action: "Cancel")
                 }
                 Spacer()
@@ -246,10 +270,21 @@ struct PreviewPane: View {
             .background(Color(NSColor.windowBackgroundColor).opacity(0.55))
         }
         .overlay(
-            Text("Tabby")
-                .font(.system(size: 11, weight: .bold, design: .rounded))
-                .foregroundColor(.secondary.opacity(0.4))
-                .padding(12),
+            HStack(spacing: 8) {
+                // Visible way to reach Preferences when the menu bar icon is missing.
+                Button(action: { (NSApp.delegate as? AppDelegate)?.showPreferencesWindow() }) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary.opacity(0.6))
+                }
+                .buttonStyle(.plain)
+                .help("Settings (⌘,)")
+
+                Text("Tabby")
+                    .font(.system(size: 11, weight: .bold, design: .rounded))
+                    .foregroundColor(.secondary.opacity(0.4))
+            }
+            .padding(12),
             alignment: .topTrailing
         )
     }

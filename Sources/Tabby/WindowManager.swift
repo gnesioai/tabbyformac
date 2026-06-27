@@ -3,6 +3,13 @@ import AppKit
 import ApplicationServices
 import SwiftUI
 
+// Private CoreGraphics SPI that returns the exact CGWindowID for an AXUIElement. Not part of the
+// public SDK, so it is incompatible with Mac App Store review — but fully fine for apps distributed
+// outside the store as a notarized, Developer ID-signed build (this is what AltTab uses). It gives a
+// unique, stable id per window, avoiding the ambiguity of matching windows by frame bounds.
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(_ element: AXUIElement, _ id: inout CGWindowID) -> AXError
+
 struct WindowItem: Identifiable, Hashable {
     let id: String // Unique ID: "pid_windowId"
     let windowId: Int?
@@ -21,6 +28,7 @@ struct WindowItem: Identifiable, Hashable {
     var browserWindowId: Int? = nil
     var browserName: String? = nil
     var tabUrl: String? = nil
+    var isActiveTab: Bool = false
     
     init(
         id: String,
@@ -37,7 +45,8 @@ struct WindowItem: Identifiable, Hashable {
         tabIndex: Int? = nil,
         browserWindowId: Int? = nil,
         browserName: String? = nil,
-        tabUrl: String? = nil
+        tabUrl: String? = nil,
+        isActiveTab: Bool = false
     ) {
         self.id = id
         self.windowId = windowId
@@ -54,6 +63,7 @@ struct WindowItem: Identifiable, Hashable {
         self.browserWindowId = browserWindowId
         self.browserName = browserName
         self.tabUrl = tabUrl
+        self.isActiveTab = isActiveTab
     }
     
     func hash(into hasher: inout Hasher) {
@@ -66,7 +76,7 @@ struct WindowItem: Identifiable, Hashable {
 }
 
 struct WindowGroup: Identifiable, Hashable {
-    var id: String { appBundleId ?? appName }
+    let id: String          // unique per group; browsers use "<bundleId>_<winId>" so profiles are separate
     let appName: String
     let appBundleId: String?
     let appIcon: NSImage?
@@ -88,57 +98,6 @@ class WindowManager {
         var roleRef: CFTypeRef?
         let err = AXUIElementCopyAttributeValue(element, kAXRoleAttribute as CFString, &roleRef)
         return err == .success || err == .noValue
-    }
-
-    /// Snapshot of on-screen windows used to map AX elements to CGWindowIDs.
-    /// Reads metadata only (PID, window number, bounds) — does NOT require Screen Recording
-    /// permission and does NOT trigger any system prompt. Fetched once per scan.
-    struct CGWindowSnapshot {
-        let entries: [(windowID: CGWindowID, pid: pid_t, bounds: CGRect)]
-    }
-
-    func fetchCGWindowSnapshot() -> CGWindowSnapshot {
-        let list = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements],
-                                              kCGNullWindowID) as? [[CFString: Any]] ?? []
-        var entries: [(windowID: CGWindowID, pid: pid_t, bounds: CGRect)] = []
-        for info in list {
-            guard let pid = info[kCGWindowOwnerPID] as? pid_t,
-                  let windowID = info[kCGWindowNumber] as? CGWindowID,
-                  let boundsDict = info[kCGWindowBounds] as? NSDictionary,
-                  let bounds = CGRect(dictionaryRepresentation: boundsDict as CFDictionary)
-            else { continue }
-            entries.append((windowID: windowID, pid: pid, bounds: bounds))
-        }
-        return CGWindowSnapshot(entries: entries)
-    }
-
-    /// Maps an AXUIElement to its CGWindowID by matching owner PID + frame bounds against a
-    /// pre-fetched snapshot. Uses only public APIs (App Store safe).
-    private func cgWindowID(for axElement: AXUIElement, pid: pid_t,
-                            in snapshot: CGWindowSnapshot) -> Int? {
-        var posRef: CFTypeRef?
-        var sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(axElement, kAXPositionAttribute as CFString, &posRef) == .success,
-              AXUIElementCopyAttributeValue(axElement, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let posVal = posRef, let sizeVal = sizeRef,
-              CFGetTypeID(posVal) == AXValueGetTypeID(),
-              CFGetTypeID(sizeVal) == AXValueGetTypeID() else { return nil }
-
-        var position = CGPoint.zero
-        var size = CGSize.zero
-        guard AXValueGetValue(posVal as! AXValue, .cgPoint, &position),
-              AXValueGetValue(sizeVal as! AXValue, .cgSize, &size) else { return nil }
-
-        let tolerance: CGFloat = 3.0
-        for entry in snapshot.entries where entry.pid == pid {
-            if abs(entry.bounds.origin.x - position.x) <= tolerance,
-               abs(entry.bounds.origin.y - position.y) <= tolerance,
-               abs(entry.bounds.size.width - size.width) <= tolerance,
-               abs(entry.bounds.size.height - size.height) <= tolerance {
-                return Int(entry.windowID)
-            }
-        }
-        return nil
     }
 
     /// Check if accessibility permissions are trusted.
@@ -250,10 +209,17 @@ class WindowManager {
                     try
                         set winId to id of w
                         set winTitle to name of w
+                        set winB to bounds of w
+                        set winBStr to (item 1 of winB) & "," & (item 2 of winB) & "," & (item 3 of winB) & "," & (item 4 of winB)
                         set tabIndex to 1
+                        set activeTab to current tab of w
                         set everyTab to every tab of w
                         repeat with t in everyTab
-                            set output to output & winId & "||" & winTitle & "||" & tabIndex & "||" & name of t & "||" & URL of t & "\\n"
+                            set isActive to "0"
+                            if t is activeTab then
+                                set isActive to "1"
+                            end if
+                            set output to output & winId & "||" & winTitle & "||" & tabIndex & "||" & name of t & "||" & URL of t & "||" & winBStr & "||" & isActive & "\\n"
                             set tabIndex to tabIndex + 1
                         end repeat
                     end try
@@ -272,10 +238,17 @@ class WindowManager {
                     try
                         set winId to id of w
                         set winTitle to title of w
+                        set winB to bounds of w
+                        set winBStr to (item 1 of winB) & "," & (item 2 of winB) & "," & (item 3 of winB) & "," & (item 4 of winB)
                         set tabIndex to 1
+                        set activeIdx to active tab index of w
                         set everyTab to every tab of w
                         repeat with t in everyTab
-                            set output to output & winId & "||" & winTitle & "||" & tabIndex & "||" & title of t & "||" & URL of t & "\\n"
+                            set isActive to "0"
+                            if tabIndex is activeIdx then
+                                set isActive to "1"
+                            end if
+                            set output to output & winId & "||" & winTitle & "||" & tabIndex & "||" & title of t & "||" & URL of t & "||" & winBStr & "||" & isActive & "\\n"
                             set tabIndex to tabIndex + 1
                         end repeat
                     end try
@@ -310,6 +283,8 @@ class WindowManager {
         let tabIndex: Int
         let tabTitle: String
         let tabUrl: String
+        let winBounds: CGRect?  // AppleScript window bounds {left,top,right,bottom}, used to match the right AX window across profiles
+        let isActiveTab: Bool
     }
     
     private func parseBrowserTabs(from output: String) -> [BrowserTabInfo]? {
@@ -327,12 +302,27 @@ class WindowManager {
                 continue
             }
 
+            var bounds: CGRect? = nil
+            if parts.count >= 6 {
+                let b = parts[5].components(separatedBy: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                if b.count == 4 {
+                    bounds = CGRect(x: b[0], y: b[1], width: b[2] - b[0], height: b[3] - b[1])
+                }
+            }
+            
+            var isActive = false
+            if parts.count >= 7 {
+                isActive = parts[6].trimmingCharacters(in: .whitespacesAndNewlines) == "1"
+            }
+
             tabs.append(BrowserTabInfo(
                 browserWindowId: winId,
                 winTitle: winTitle,
                 tabIndex: tabIdx,
                 tabTitle: tabTitle,
-                tabUrl: tabUrl
+                tabUrl: tabUrl,
+                winBounds: bounds,
+                isActiveTab: isActive
             ))
         }
         return tabs.isEmpty ? nil : tabs
@@ -346,32 +336,15 @@ class WindowManager {
         return parseBrowserTabs(from: output)
     }
 
-    /// Thread-safe variant for concurrent use: builds a FRESH NSAppleScript instance (never the
-    /// shared cache) so multiple browser fetches can run on different threads without sharing a
-    /// non-thread-safe NSAppleScript instance.
-    private func fetchBrowserTabsConcurrentSafe(bundleId: String, browserName: String) -> [BrowserTabInfo]? {
-        let source = browserTabScriptSource(bundleId: bundleId, browserName: browserName)
-        guard let script = NSAppleScript(source: source) else { return nil }
-        var errorInfo: NSDictionary?
-        let result = script.executeAndReturnError(&errorInfo)
-        guard errorInfo == nil, let output = result.stringValue, !output.isEmpty else {
-            if let err = errorInfo { print("Tabby AppleScript error (\(browserName)): \(err)") }
-            return nil
-        }
-        return parseBrowserTabs(from: output)
-    }
-    
     /// Collect all windows grouped by application (metadata only — no thumbnails, instant)
     func collectWindowGroups(expandedGroupIds: Set<String> = []) -> [WindowGroup] {
         var groups: [WindowGroup] = []
         let workspace = NSWorkspace.shared
         let runningApps = workspace.runningApplications
-        // Single metadata snapshot for the whole scan (avoids per-window system calls).
-        let cgSnapshot = fetchCGWindowSnapshot()
-
-        // Pre-fetch every browser's tabs CONCURRENTLY. AppleScript round-trips are slow; doing
-        // them serially inside the loop would make the whole list wait on the sum of all browsers.
-        // Concurrent fetch means it waits only on the slowest single browser.
+        // Pre-fetch each browser's tabs CONCURRENTLY using its CACHED, compiled AppleScript.
+        // Concurrency keeps the open fast with multiple browsers; reusing the cached script
+        // (compiled once, never rebuilt) avoids the per-open instance churn. Each browser has its
+        // own distinct cached instance run by a single task, so no instance is shared across threads.
         struct BrowserFetch { let bundleId: String; let browserName: String; let key: String }
         var fetchList: [BrowserFetch] = []
         for app in runningApps where app.activationPolicy == .regular {
@@ -386,13 +359,11 @@ class WindowManager {
         }
         var prefetchedTabs: [String: [BrowserTabInfo]] = [:]
         if !fetchList.isEmpty {
-            let lock = NSLock()
-            DispatchQueue.concurrentPerform(iterations: fetchList.count) { i in
-                let f = fetchList[i]
-                if let tabs = self.fetchBrowserTabsConcurrentSafe(bundleId: f.bundleId, browserName: f.browserName) {
-                    lock.lock()
+            // Serial, NOT concurrent: NSAppleScript / Apple Events are not thread-safe, and running
+            // multiple browser scripts at once races so every browser returns the same browser's tabs.
+            for f in fetchList {
+                if let tabs = self.fetchBrowserTabs(bundleId: f.bundleId, browserName: f.browserName) {
                     prefetchedTabs[f.key] = tabs
-                    lock.unlock()
                 }
             }
         }
@@ -414,119 +385,185 @@ class WindowManager {
 
                 if let tabs = prefetchedTabs[groupKey] {
                     isBrowserWithTabs = true
-                    
+
                     let appElement = AXUIElementCreateApplication(pid)
                     var windowListRef: CFTypeRef?
                     _ = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowListRef)
                     let axWindows = windowListRef as? [AXUIElement] ?? []
-                    
-                    for tab in tabs {
-                        var matchedAXWindow: AXUIElement? = nil
+
+                    let tabsByWindow = Dictionary(grouping: tabs, by: { $0.browserWindowId })
+
+                    // CGWindowListCopyWindowInfo sees windows on ALL Spaces; kAXWindowsAttribute
+                    // only returns windows on the current Space. Use CG for thumbnail windowIds,
+                    // AX for focus/raise actions.
+                    // Filter to actual browser windows: same PID, layer 0, large enough to be a real window.
+                    let allCGWins = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+                    let chromeCGWins = allCGWins.filter { win -> Bool in
+                        guard (win[kCGWindowOwnerPID as String] as? Int) == Int(pid),
+                              (win[kCGWindowLayer as String] as? Int) == 0,
+                              let boundsNS = win[kCGWindowBounds as String] as? NSDictionary,
+                              let rect = CGRect(dictionaryRepresentation: boundsNS as CFDictionary)
+                        else { return false }
+                        return rect.width > 200 && rect.height > 200
+                    }
+                    // AX window matching (current Space only) — used for focus/raise AND
+                    // as the primary source of CGWindowIDs via _AXUIElementGetWindow.
+                    // Falls back to appElement when the window is on another Space.
+                    var winIdToAX: [Int: AXUIElement] = [:]
+                    for (browserWinId, winTabs) in tabsByWindow {
+                        guard let firstTab = winTabs.first else { continue }
+                        var bestAXWindow: AXUIElement? = nil
+                        var bestDist = CGFloat.infinity
                         for axWin in axWindows {
-                            var titleRef: CFTypeRef?
-                            AXUIElementCopyAttributeValue(axWin, kAXTitleAttribute as CFString, &titleRef)
-                            let axTitle = titleRef as? String ?? ""
-                            if axTitle == tab.winTitle || tab.winTitle.contains(axTitle) || axTitle.contains(tab.winTitle) {
-                                matchedAXWindow = axWin
-                                break
+                            var posRef: CFTypeRef?
+                            var sizeRef: CFTypeRef?
+                            var pos = CGPoint.zero
+                            var size = CGSize.zero
+                            AXUIElementCopyAttributeValue(axWin, kAXPositionAttribute as CFString, &posRef)
+                            AXUIElementCopyAttributeValue(axWin, kAXSizeAttribute as CFString, &sizeRef)
+                            if let p = posRef { AXValueGetValue(p as! AXValue, .cgPoint, &pos) }
+                            if let s = sizeRef { AXValueGetValue(s as! AXValue, .cgSize, &size) }
+                            if let b = firstTab.winBounds {
+                                let dx = pos.x - b.origin.x; let dy = pos.y - b.origin.y
+                                let dist = dx*dx + dy*dy
+                                if dist < bestDist { bestDist = dist; bestAXWindow = axWin }
                             }
                         }
-                        
-                        let axElementToUse = matchedAXWindow ?? axWindows.first ?? appElement
-                        
-                        let finalCGWinId: Int? = cgWindowID(for: axElementToUse, pid: pid, in: cgSnapshot)
-                        
-                        let uniqueId = "tab_\(pid)_\(tab.browserWindowId)_\(tab.tabIndex)"
-                        
-                        let item = WindowItem(
-                            id: uniqueId,
-                            windowId: finalCGWinId,
-                            processId: pid,
-                            appName: appName,
-                            appBundleId: bundleId,
-                            title: tab.tabTitle,
-                            isMinimized: false,
-                            lastFocusedAt: nil,
-                            axElement: axElementToUse,
-                            thumbnail: nil,
-                            isTab: true,
-                            tabIndex: tab.tabIndex,
-                            browserWindowId: tab.browserWindowId,
-                            browserName: browserName,
-                            tabUrl: tab.tabUrl
-                        )
-                        items.append(item)
+                        winIdToAX[browserWinId] = bestAXWindow  // nil if axWindows is empty
+                    }
+
+                    // Build CGWindowID map: primary = _AXUIElementGetWindow on matched AX window
+                    // (reliable for same-Space windows); fallback = Z-order index into CGWindowList
+                    // (handles cross-Space windows where AX is blind).
+                    var orderedWinIds: [Int] = []
+                    var seenWinIds = Set<Int>()
+                    for tab in tabs where seenWinIds.insert(tab.browserWindowId).inserted {
+                        orderedWinIds.append(tab.browserWindowId)
+                    }
+                    var winIdToCGWindowId: [Int: CGWindowID] = [:]
+                    for (i, winId) in orderedWinIds.enumerated() {
+                        // Primary: AX element -> _AXUIElementGetWindow
+                        if let axWin = winIdToAX[winId] {
+                            var cgId: CGWindowID = 0
+                            if _AXUIElementGetWindow(axWin, &cgId) == .success, cgId != 0 {
+                                winIdToCGWindowId[winId] = cgId
+                                continue
+                            }
+                        }
+                        // Fallback: Z-order index mapping for cross-Space windows
+                        if i < chromeCGWins.count,
+                           let cgId = chromeCGWins[i][kCGWindowNumber as String] as? Int {
+                            winIdToCGWindowId[winId] = CGWindowID(cgId)
+                        }
+                    }
+
+                    // Group tabs by their browser window ID so each profile window becomes
+                    // a separate Tabby group rather than all profiles merging under one Chrome entry.
+                    for (browserWinId, winTabs) in tabsByWindow {
+                        let axElementToUse = winIdToAX[browserWinId] ?? appElement
+                        var winItems: [WindowItem] = []
+                        for tab in winTabs {
+                            let finalCGWinId: Int? = winIdToCGWindowId[tab.browserWindowId].map { Int($0) }
+
+                            let item = WindowItem(
+                                id: "tab_\(pid)_\(tab.browserWindowId)_\(tab.tabIndex)",
+                                windowId: finalCGWinId,
+                                processId: pid,
+                                appName: appName,
+                                appBundleId: bundleId,
+                                title: tab.tabTitle,
+                                isMinimized: false,
+                                lastFocusedAt: nil,
+                                axElement: axElementToUse,
+                                thumbnail: nil,
+                                isTab: true,
+                                tabIndex: tab.tabIndex,
+                                browserWindowId: tab.browserWindowId,
+                                browserName: browserName,
+                                tabUrl: tab.tabUrl,
+                                isActiveTab: tab.isActiveTab
+                            )
+                            winItems.append(item)
+                        }
+                        if !winItems.isEmpty {
+                            // Unique group ID per browser window — prevents profiles from merging
+                            let groupId = bundleId.isEmpty ? "\(appName)_\(browserWinId)" : "\(bundleId)_\(browserWinId)"
+                            groups.append(WindowGroup(
+                                id: groupId,
+                                appName: appName,
+                                appBundleId: bundleId,
+                                appIcon: appIcon,
+                                windows: winItems,
+                                mostRecentWindow: winItems.first
+                            ))
+                        }
                     }
                 }
             }
-            
+
             if !isBrowserWithTabs {
                 let appElement = AXUIElementCreateApplication(pid)
                 var windowListRef: CFTypeRef?
                 let result = AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowListRef)
-                
-                // If we can't copy windows, skip
+
                 guard result == .success, let windows = windowListRef as? [AXUIElement] else { continue }
-                
+
                 for window in windows {
-                    // Filter out non-standard windows (like sheets, drawers, popups, and menus)
                     var subroleRef: CFTypeRef?
                     AXUIElementCopyAttributeValue(window, kAXSubroleAttribute as CFString, &subroleRef)
                     let subrole = subroleRef as? String ?? ""
-                    
-                    // Allowed window types: standard window, dialog, system dialog, or empty subrole (some apps don't set it)
+
                     let allowedSubroles = [kAXStandardWindowSubrole, kAXDialogSubrole, kAXSystemDialogSubrole, ""]
                     if !subrole.isEmpty && !allowedSubroles.contains(subrole) {
                         continue
                     }
-                    
-                    // Filter out windows that cannot be focused/interacted with
+
                     var roleRef: CFTypeRef?
                     AXUIElementCopyAttributeValue(window, kAXRoleAttribute as CFString, &roleRef)
                     let role = roleRef as? String ?? ""
                     if !role.isEmpty && role != kAXWindowRole {
                         continue
                     }
-                    
-                    // Get window title
+
                     var titleRef: CFTypeRef?
                     AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef)
                     let title = titleRef as? String ?? ""
-                    
-                    // Ignore empty or untitled windows
                     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if trimmedTitle.isEmpty {
-                        continue
-                    }
-                    
-                    // Get minimized state
+                    let resolvedTitle = trimmedTitle.isEmpty ? appName : trimmedTitle
+
                     var minimizedRef: CFTypeRef?
                     AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimizedRef)
                     let isMinimized = (minimizedRef as? Bool) ?? false
-                    
-                    let windowId: Int? = cgWindowID(for: window, pid: pid, in: cgSnapshot)
-                    
+
+                    var windowId: Int? = nil
+                    var cgWinId: CGWindowID = 0
+                    if _AXUIElementGetWindow(window, &cgWinId) == .success {
+                        windowId = Int(cgWinId)
+                    }
+
                     let uniqueId = "\(pid)_\(windowId ?? Int(bitPattern: ObjectIdentifier(window)))"
-                    
-                    // Thumbnail is nil here — lazy-loaded separately after display
+
                     let item = WindowItem(
                         id: uniqueId,
                         windowId: windowId,
                         processId: pid,
                         appName: appName,
                         appBundleId: bundleId,
-                        title: title,
+                        title: resolvedTitle,
                         isMinimized: isMinimized,
                         lastFocusedAt: nil,
                         axElement: window,
-                        thumbnail: nil
+                        thumbnail: nil,
+                        isActiveTab: true
                     )
                     items.append(item)
                 }
             }
-            
+
             if !items.isEmpty {
+                let groupId = bundleId.isEmpty ? appName : bundleId
                 let group = WindowGroup(
+                    id: groupId,
                     appName: appName,
                     appBundleId: bundleId,
                     appIcon: appIcon,
@@ -541,7 +578,7 @@ class WindowManager {
     }
     
     /// Captures a live screenshot of a window by its CGWindowID
-    func captureWindowThumbnail(windowId: CGWindowID, maxWidth: CGFloat = 280) -> NSImage? {
+    func captureWindowThumbnail(windowId: CGWindowID, maxWidth: CGFloat = 640) -> NSImage? {
         guard UserDefaults.standard.bool(forKey: "TabbyScreenRecordingRequested") else {
             return nil
         }
@@ -556,7 +593,7 @@ class WindowManager {
         ) else {
             return nil
         }
-        
+
         let fullSize = NSSize(width: cgImage.width, height: cgImage.height)
         guard fullSize.width > 0, fullSize.height > 0 else { return nil }
         
