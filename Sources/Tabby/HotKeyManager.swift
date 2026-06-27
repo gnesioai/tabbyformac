@@ -74,7 +74,6 @@ class HotKeyManager {
         )
         
         guard handlerResult == noErr else {
-            print("Tabby: Failed to install event handler: \(handlerResult)")
             return false
         }
         
@@ -88,11 +87,9 @@ class HotKeyManager {
         )
         
         guard registerResult == noErr else {
-            print("Tabby: Failed to register hotkey: \(registerResult)")
             return false
         }
         
-        print("Tabby: Registered global Carbon hotkey")
         return true
     }
     
@@ -158,7 +155,6 @@ class HotKeyManager {
             },
             userInfo: selfPointer
         ) else {
-            print("Tabby: Failed to create CGEventTap for Command+Tab (Accessibility permission may be missing)")
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .cmdTabTapFailed, object: nil)
             }
@@ -171,7 +167,6 @@ class HotKeyManager {
         
         self.eventTap = tap
         self.runLoopSource = source
-        print("Tabby: Registered global CGEventTap for Command + Tab")
         return true
     }
     

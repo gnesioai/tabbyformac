@@ -37,8 +37,14 @@ class SwitcherState: ObservableObject {
     private var hasPromptedAccessibilityInSession = false
     private var hasPromptedScreenRecordingInSession = false
     
+    private let activationHistoryKey = "TabbyAppActivationHistory"
+
     init() {
         checkPermission()
+        // Restore recency order from previous sessions so chronology survives relaunches.
+        if let stored = UserDefaults.standard.dictionary(forKey: activationHistoryKey) as? [String: Double] {
+            appActivationHistory = stored.mapValues { Date(timeIntervalSinceReferenceDate: $0) }
+        }
         // Record initial frontmost app
         if let frontmostApp = NSWorkspace.shared.frontmostApplication {
             activeAppProcessId = frontmostApp.processIdentifier
@@ -68,8 +74,12 @@ class SwitcherState: ObservableObject {
 
     private func recordActivation(of app: NSRunningApplication) {
         let key = activationKey(for: app)
-        guard !key.isEmpty else { return }
+        // Ignore empty keys and Tabby's own activation (it never appears as a group).
+        guard !key.isEmpty, key != Bundle.main.bundleIdentifier else { return }
         appActivationHistory[key] = Date()
+        // Persist so recency survives relaunches.
+        let serialized = appActivationHistory.mapValues { $0.timeIntervalSinceReferenceDate }
+        UserDefaults.standard.set(serialized, forKey: activationHistoryKey)
     }
 
     @objc private func handleAppActivated(_ note: Notification) {
@@ -88,7 +98,6 @@ class SwitcherState: ObservableObject {
             
             DispatchQueue.main.async {
                 if axTrusted && !self.hasPermission {
-                    print("Tabby: Accessibility permission detected via polling!")
                     self.hasPermission = true
                     self.refreshWindows()
                     NotificationCenter.default.post(name: .didUpdateShortcut, object: nil)
@@ -214,7 +223,6 @@ class SwitcherState: ObservableObject {
             }
         }
         
-        NSLog("%@", "Tabby Diagnostics: refreshWindows() captured - previousGroupId: \(String(describing: previousGroupId)), previousWindowId: \(String(describing: previousWindowId)), previousWindowIndex: \(String(describing: previousWindowIndex))")
         
         // Extract existing thumbnails to preserve them
         var oldThumbnailsById: [String: NSImage] = [:]
@@ -304,7 +312,7 @@ class SwitcherState: ObservableObject {
             
             DispatchQueue.main.async { [weak self] in
                 guard let self = self, self.thumbnailLoadToken == myToken else { return }
-                
+
                 self.groups = collected
                 self.updateSearchResults()
                 if preserveSelection {
@@ -444,17 +452,14 @@ class SwitcherState: ObservableObject {
     /// Re-applies selection by matching the previously selected group ID and window ID/index if possible,
     /// otherwise falls back to default selection.
     func preserveOrResetSelection(previousGroupId: String?, previousWindowId: String?, previousWindowIndex: Int?) {
-        NSLog("%@", "Tabby Diagnostics: preserveOrResetSelection() called with - previousGroupId: \(String(describing: previousGroupId)), previousWindowId: \(String(describing: previousWindowId)), previousWindowIndex: \(String(describing: previousWindowIndex))")
         if searchQuery.isEmpty {
             guard let prevGroupId = previousGroupId else {
-                NSLog("%@", "Tabby Diagnostics: previousGroupId is nil, calling resetSelection()")
                 resetSelection()
                 return
             }
             
             // Find the group in the new list
             if let newGroupIdx = groups.firstIndex(where: { $0.id == prevGroupId }) {
-                NSLog("%@", "Tabby Diagnostics: Found group \(prevGroupId) at index \(newGroupIdx). Previous selectedGroupIndex was \(selectedGroupIndex)")
                 selectedGroupIndex = newGroupIdx
                 
                 // If a specific window was selected, try to match it
@@ -462,38 +467,30 @@ class SwitcherState: ObservableObject {
                     let group = groups[newGroupIdx]
                     if let prevWinId = previousWindowId,
                        let newWinIdx = group.windows.firstIndex(where: { $0.id == prevWinId }) {
-                        NSLog("%@", "Tabby Diagnostics: Matched window ID \(prevWinId) at new index \(newWinIdx)")
                         selectedWindowIndex = newWinIdx
                     } else if prevWinIndex < group.windows.count {
-                        NSLog("%@", "Tabby Diagnostics: Fallback to prevWinIndex \(prevWinIndex)")
                         selectedWindowIndex = prevWinIndex
                     } else {
                         let fallbackIdx = group.windows.isEmpty ? nil : group.windows.count - 1
-                        NSLog("%@", "Tabby Diagnostics: Fallback to last window index: \(String(describing: fallbackIdx))")
                         selectedWindowIndex = fallbackIdx
                     }
                 } else {
-                    NSLog("%@", "Tabby Diagnostics: No window was previously selected, keeping selectedWindowIndex = nil")
                     selectedWindowIndex = nil
                 }
             } else {
-                NSLog("%@", "Tabby Diagnostics: Group \(prevGroupId) not found in new list. Available groups: \(groups.map { $0.id }). Calling resetSelection()")
                 // Fallback if the group no longer exists
                 resetSelection()
             }
         } else {
             // Flat search results: since it is flat and transient, we can match by item ID if possible
             guard let prevGroupId = previousGroupId else {
-                NSLog("%@", "Tabby Diagnostics: Flat search previousGroupId is nil, calling resetSelection()")
                 resetSelection()
                 return
             }
             if let newIdx = searchResults.firstIndex(where: { $0.id == prevGroupId }) {
-                NSLog("%@", "Tabby Diagnostics: Flat search matched ID \(prevGroupId) at \(newIdx)")
                 selectedGroupIndex = newIdx
                 selectedWindowIndex = nil
             } else {
-                NSLog("%@", "Tabby Diagnostics: Flat search ID \(prevGroupId) not found in searchResults: \(searchResults.map { $0.id }). Calling resetSelection()")
                 resetSelection()
             }
         }
@@ -559,7 +556,6 @@ class SwitcherState: ObservableObject {
     // MARK: - Keyboard Controls
     
     func moveSelectionDown() {
-        NSLog("%@", "Tabby Diagnostics: moveSelectionDown() start. Current selection: group \(selectedGroupIndex), window \(String(describing: selectedWindowIndex))")
         if searchQuery.isEmpty {
             // Grouped view navigation
             guard !groups.isEmpty else { return }
@@ -603,11 +599,9 @@ class SwitcherState: ObservableObject {
                 selectedGroupIndex = 0
             }
         }
-        NSLog("%@", "Tabby Diagnostics: moveSelectionDown() end. New selection: group \(selectedGroupIndex), window \(String(describing: selectedWindowIndex))")
     }
     
     func moveSelectionUp() {
-        NSLog("%@", "Tabby Diagnostics: moveSelectionUp() start. Current selection: group \(selectedGroupIndex), window \(String(describing: selectedWindowIndex))")
         if searchQuery.isEmpty {
             // Grouped view navigation
             guard !groups.isEmpty else { return }
@@ -654,7 +648,6 @@ class SwitcherState: ObservableObject {
                 selectedGroupIndex = searchResults.count - 1
             }
         }
-        NSLog("%@", "Tabby Diagnostics: moveSelectionUp() end. New selection: group \(selectedGroupIndex), window \(String(describing: selectedWindowIndex))")
     }
     
     func expandGroup() {

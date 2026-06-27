@@ -173,12 +173,8 @@ class WindowManager {
         var errorInfo: NSDictionary?
         if let result = script?.executeAndReturnError(&errorInfo) {
             return result.stringValue
-        } else {
-            if let err = errorInfo {
-                print("Tabby AppleScript error: \(err)")
-            }
-            return nil
         }
+        return nil
     }
     
     private func executeAppleScript(_ script: NSAppleScript) -> String? {
@@ -186,12 +182,8 @@ class WindowManager {
         let result = script.executeAndReturnError(&errorInfo)
         if errorInfo == nil {
             return result.stringValue
-        } else {
-            if let err = errorInfo {
-                print("Tabby AppleScript error: \(err)")
-            }
-            return nil
         }
+        return nil
     }
     
     /// Builds the tab-enumeration AppleScript source for a browser. Pure string construction,
@@ -612,7 +604,6 @@ class WindowManager {
             return false
         }
         guard isAXElementValid(windowItem.axElement) else {
-            print("Tabby: AXUIElement is stale for PID \(windowItem.processId), skipping focus")
             return false
         }
 
@@ -628,14 +619,12 @@ class WindowManager {
         if windowItem.isMinimized {
             let result = AXUIElementSetAttributeValue(windowItem.axElement, kAXMinimizedAttribute as CFString, false as CFBoolean)
             if result != .success {
-                print("Tabby: Failed to un-minimize window (PID \(windowItem.processId)): \(result)")
             }
         }
         
         // 4. Raise the window to front
         let raiseResult = AXUIElementPerformAction(windowItem.axElement, kAXRaiseAction as CFString)
         if raiseResult != .success {
-            print("Tabby: Failed to raise window (PID \(windowItem.processId)): \(raiseResult)")
         }
         
         // 5. Make it the main window
@@ -699,7 +688,6 @@ class WindowManager {
     /// Closes a target window using Accessibility APIs
     func close(windowItem: WindowItem) -> Bool {
         guard isAXElementValid(windowItem.axElement) else {
-            print("Tabby: AXUIElement is stale for PID \(windowItem.processId), skipping close")
             return false
         }
         var closeButtonRef: CFTypeRef?
@@ -711,11 +699,9 @@ class WindowManager {
             let actionResult = AXUIElementPerformAction(closeButton, kAXPressAction as CFString)
             
             if actionResult != .success {
-                print("Tabby: Failed to perform close action on window (PID \(windowItem.processId)): \(actionResult)")
             }
             return actionResult == .success
         } else {
-            print("Tabby: Failed to find close button for window (PID \(windowItem.processId)): \(result)")
             return false
         }
     }

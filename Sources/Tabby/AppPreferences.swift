@@ -104,17 +104,13 @@ class AppPreferences: ObservableObject {
             if service.status == .enabled { return }
             do {
                 try service.register()
-                print("Tabby: Successfully enabled launch at login")
             } catch {
-                print("Tabby: Failed to enable launch at login: \(error.localizedDescription)")
             }
         } else {
             if service.status == .notRegistered { return }
             do {
                 try service.unregister()
-                print("Tabby: Successfully disabled launch at login")
             } catch {
-                print("Tabby: Failed to disable launch at login: \(error.localizedDescription)")
             }
         }
     }

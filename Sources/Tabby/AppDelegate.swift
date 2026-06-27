@@ -135,7 +135,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         }
         
         if !success {
-            print("Tabby: Failed to register hotkey: \(preset.rawValue)")
         }
     }
     
@@ -146,7 +145,6 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     @objc private func handleDockStateUpdate() {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
-            print("Tabby: Recreating status bar item due to dock state update")
             self.createStatusItem()
         }
     }
