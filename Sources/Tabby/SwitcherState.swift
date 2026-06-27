@@ -185,8 +185,10 @@ class SwitcherState: ObservableObject {
 
         isLoading = groups.isEmpty
 
-        // Fresh open: clear any stale highlight immediately so the old selection never flashes.
+        // Fresh open: start fully collapsed (groups expand only on demand) and clear any stale
+        // highlight immediately so the old selection never flashes.
         if !preserveSelection {
+            expandedGroupIds.removeAll()
             resetSelection()
         }
 
