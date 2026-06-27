@@ -178,9 +178,11 @@ class SwitcherState: ObservableObject {
             return
         }
 
-        // Find current frontmost app
+        // Find current frontmost app. Stamp it as active "now" — macOS only fires activation
+        // events on switch, so an app you never leave would otherwise show a stale "X ago".
         if let frontmostApp = NSWorkspace.shared.frontmostApplication {
             activeAppProcessId = frontmostApp.processIdentifier
+            recordActivation(of: frontmostApp)
         }
 
         isLoading = groups.isEmpty
@@ -252,14 +254,16 @@ class SwitcherState: ObservableObject {
             
             var collected = WindowManager.shared.collectWindowGroups(expandedGroupIds: expandedGroupIdsCopy)
             
-            // Apply focus history and preserve thumbnails
+            // Apply recency and preserve thumbnails. "Last used" is the most recent of the real
+            // OS app activation (app-level) and any Tabby-mediated window focus (per-window), so an
+            // app used normally — not just picked via Tabby — shows an accurate "X ago".
             for i in 0..<collected.count {
                 var group = collected[i]
+                let appKey = group.appBundleId ?? group.appName
+                let appActivated = activationCopy[appKey]
                 for j in 0..<group.windows.count {
                     let win = group.windows[j]
-                    if let date = historyCopy[win.id] {
-                        group.windows[j].lastFocusedAt = date
-                    }
+                    group.windows[j].lastFocusedAt = [historyCopy[win.id], appActivated].compactMap { $0 }.max()
                     if let oldThumb = oldThumbnailsById[win.id] {
                         group.windows[j].thumbnail = oldThumb
                     } else if win.isTab, let url = win.tabUrl, !url.isEmpty, let oldThumb = oldThumbnailsByUrl[url] {
